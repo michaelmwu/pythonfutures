@@ -76,36 +76,21 @@ class _WorkItem(object):
         else:
             self.future.set_result(result)
 
-def _worker(executor_reference, work_queue):
-    try:
-        while True:
-            try:
-                work_item = work_queue.get(block=True, timeout=0.1)
-            except queue.Empty:
-                executor = executor_reference()
-                # Exit if:
-                #   - The interpreter is shutting down OR
-                #   - The executor that owns the worker has been collected OR
-                #   - The executor that owns the worker has been shutdown.
-                if _shutdown or executor is None or executor._shutdown:
-                    return
-                del executor
-            else:
-                work_item.run()
-    except BaseException:
-        _base.LOGGER.critical('Exception in worker', exc_info=True)
-
 class ThreadPoolExecutor(_base.Executor):
-    def __init__(self, max_workers):
+    def __init__(self, max_workers=20, core_workers=0, keepalive=0.1):
         """Initializes a new ThreadPoolExecutor instance.
 
         Args:
+            core_workers: The number of persistent threads
             max_workers: The maximum number of threads that can be used to
                 execute the given calls.
+            keepalive: The time for non-core workers to wait for tasks
         """
         _remove_dead_thread_references()
 
-        self._max_workers = max_workers
+        self._max_workers = max(max_workers, core_workers, 1)
+        self._core_workers = core_workers
+        self._keepalive = keepalive
         self._work_queue = queue.Queue()
         self._threads = set()
         self._shutdown = False
@@ -124,12 +109,36 @@ class ThreadPoolExecutor(_base.Executor):
             return f
     submit.__doc__ = _base.Executor.submit.__doc__
 
+    def _worker(self, core):
+        block = True
+        timeout = None
+
+        if not core:
+            block = self._keepalive > 0
+            timeout = self._keepalive
+
+        while True:
+            try:
+                work_item = self._work_queue.get(block, timeout)
+            except queue.Empty:
+                # Exit if:
+                #   - The interpreter is shutting down OR
+                #   - The executor that owns the worker has been collected OR
+                #   - The executor that owns the worker has been shutdown.
+                if _shutdown or self._shutdown:
+                    return
+            else:
+                try:
+                    work_item.run()
+                except BaseException:
+                    _base.LOGGER.critical('Exception in worker', exc_info=True)
+
     def _adjust_thread_count(self):
         # TODO(bquinlan): Should avoid creating new threads if there are more
         # idle threads than items in the work queue.
         if len(self._threads) < self._max_workers:
-            t = threading.Thread(target=_worker,
-                                 args=(weakref.ref(self), self._work_queue))
+            t = threading.Thread(target=self._worker,
+                                 args=(len(self._threads) < self._core_workers,))
             t.daemon = True
             t.start()
             self._threads.add(t)
