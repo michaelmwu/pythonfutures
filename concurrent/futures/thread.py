@@ -9,6 +9,7 @@ import threading
 import weakref
 import sys
 
+from threading import currentThread
 from concurrent.futures import _base
 
 try:
@@ -77,7 +78,7 @@ class _WorkItem(object):
             self.future.set_result(result)
 
 class ThreadPoolExecutor(_base.Executor):
-    def __init__(self, max_workers=20, core_workers=0, keepalive=0.1):
+    def __init__(self, max_workers=20, core_workers=0, keepalive=1):
         """Initializes a new ThreadPoolExecutor instance.
 
         Args:
@@ -121,17 +122,21 @@ class ThreadPoolExecutor(_base.Executor):
             try:
                 work_item = self._work_queue.get(block, timeout)
             except queue.Empty:
-                # Exit if:
-                #   - The interpreter is shutting down OR
-                #   - The executor that owns the worker has been collected OR
-                #   - The executor that owns the worker has been shutdown.
-                if _shutdown or self._shutdown:
-                    return
-            else:
-                try:
-                    work_item.run()
-                except BaseException:
-                    _base.LOGGER.critical('Exception in worker', exc_info=True)
+                break
+
+            # Exit if:
+            #   - The interpreter is shutting down OR
+            #   - The executor that owns the worker has been collected OR
+            #   - The executor that owns the worker has been shutdown.
+            if _shutdown or self._shutdown:
+                break
+            
+            try:
+                work_item.run()
+            except BaseException:
+                _base.LOGGER.critical('Exception in worker', exc_info=True)
+
+        self._threads.remove(currentThread())
 
     def _adjust_thread_count(self):
         # TODO(bquinlan): Should avoid creating new threads if there are more
@@ -147,7 +152,11 @@ class ThreadPoolExecutor(_base.Executor):
     def shutdown(self, wait=True):
         with self._shutdown_lock:
             self._shutdown = True
+
+        for _ in range(len(self._threads)):
+            self._work_queue.put(None)
+
         if wait:
-            for t in self._threads:
+            for t in tuple(self._threads):
                 t.join()
     shutdown.__doc__ = _base.Executor.shutdown.__doc__
