@@ -5,6 +5,7 @@
 
 from __future__ import with_statement
 import atexit
+import multiprocessing
 import threading
 import weakref
 import sys
@@ -78,7 +79,7 @@ class _WorkItem(object):
             self.future.set_result(result)
 
 class ThreadPoolExecutor(_base.Executor):
-    def __init__(self, max_workers=20, core_workers=0, keepalive=1):
+    def __init__(self, max_workers=None, core_workers=0, keepalive=1):
         """Initializes a new ThreadPoolExecutor instance.
 
         Args:
@@ -89,6 +90,9 @@ class ThreadPoolExecutor(_base.Executor):
         """
         _remove_dead_thread_references()
 
+        if max_workers is None:
+            max_workers = int(multiprocessing.cpu_count() * 2.5)
+
         self._max_workers = max(max_workers, core_workers, 1)
         self._core_workers = core_workers
         self._keepalive = keepalive
@@ -97,17 +101,33 @@ class ThreadPoolExecutor(_base.Executor):
         self._shutdown = False
         self._shutdown_lock = threading.Lock()
 
-    def submit(self, fn, *args, **kwargs):
+    def _workitem(self, future, fn, args=None, kwargs=None):
+        return _WorkItem(future, fn, args, kwargs)
+
+    def _add_job(self, fn, args=None, kwargs=None, **opts):
+        args = args or ()
+        kwargs = kwargs or {}
+
         with self._shutdown_lock:
             if self._shutdown:
                 raise RuntimeError('cannot schedule new futures after shutdown')
 
             f = _base.Future()
-            w = _WorkItem(f, fn, args, kwargs)
+            w = self._workitem(f, fn, args, kwargs)
 
             self._work_queue.put(w)
             self._adjust_thread_count()
+
             return f
+
+    def submit_args(self, fn, args=None, kwargs=None, **opts):
+        return self._add_job(fn, args, kwargs, **opts)
+
+    submit_args.__doc__ = _base.Executor.submit_args.__doc__
+
+    def submit(self, fn, *args, **kwargs):
+        return self._add_job(fn, args, kwargs)
+
     submit.__doc__ = _base.Executor.submit.__doc__
 
     def _worker(self, core):

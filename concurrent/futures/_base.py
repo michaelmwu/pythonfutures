@@ -290,6 +290,7 @@ class Future(object):
         self._state = PENDING
         self._result = None
         self._exception = None
+        self._traceback = None
         self._waiters = []
         self._done_callbacks = []
 
@@ -492,13 +493,14 @@ class Future(object):
             self._condition.notify_all()
         self._invoke_callbacks()
 
-    def set_exception(self, exception):
+    def set_exception(self, exception, traceback=None):
         """Sets the result of the future as being the given exception.
 
         Should only be used by Executor implementations and unit tests.
         """
         with self._condition:
             self._exception = exception
+            self._traceback = traceback
             self._state = FINISHED
             for waiter in self._waiters:
                 waiter.add_exception(self)
@@ -507,6 +509,18 @@ class Future(object):
 
 class Executor(object):
     """This is an abstract base class for concrete asynchronous executors."""
+
+    def submit_args(self, fn, args=None, kwargs=None, **opts):
+        """Submits a callable to be executed with the given arguments.
+
+        Schedules the callable to be executed as fn(*args, **kwargs) and returns
+        a Future instance representing the execution of the callable.
+
+        Returns:
+            A Future representing the given call.
+        """
+        raise NotImplementedError()
+
 
     def submit(self, fn, *args, **kwargs):
         """Submits a callable to be executed with the given arguments.
@@ -518,6 +532,7 @@ class Executor(object):
             A Future representing the given call.
         """
         raise NotImplementedError()
+
 
     def map(self, fn, *iterables, **kwargs):
         """Returns a iterator equivalent to map(fn, iter).
